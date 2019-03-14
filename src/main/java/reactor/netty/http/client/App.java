@@ -40,6 +40,7 @@ public class App {
 
         HttpClient httpClient = HttpClient.create()
                 .tcpConfiguration(cfg -> {
+                    // hackish
                     final AtomicReference<Transaction> t = new AtomicReference<>();
                     return cfg.doOnConnect(b -> {
                         t.set(new Transaction());
@@ -47,11 +48,12 @@ public class App {
                         t.get().complete();
                         System.out.println("TCP connect took " + t.get().elapsedMillis() + " ms.");
                     }).resolver(new AddressResolverGroup<InetSocketAddress>() {
+                        // hack coupling:(
                         private final AddressResolverGroup<InetSocketAddress> delegate = DefaultAddressResolverGroup.INSTANCE;
 
                         @Override
                         protected AddressResolver<InetSocketAddress> newResolver(EventExecutor executor) {
-                            // definitely not sure about this one..
+                            // Possible hack??  I'd feel much better if I were implemting `getResolver`
                             final AddressResolver<InetSocketAddress> resolverDelegate = delegate.getResolver(executor);
 
                             return new AddressResolver<InetSocketAddress>() {
