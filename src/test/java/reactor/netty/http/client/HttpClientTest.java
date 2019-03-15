@@ -44,6 +44,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import javax.net.ssl.SSLException;
 
 import io.netty.buffer.ByteBuf;
@@ -71,6 +73,9 @@ import io.netty.util.concurrent.DefaultEventExecutor;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.runners.Enclosed;
+import org.junit.runner.RunWith;
+import org.reactivestreams.Publisher;
 import reactor.core.publisher.DirectProcessor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -97,6 +102,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Stephane Maldini
  * @since 0.6
  */
+@RunWith(Enclosed.class)
 public class HttpClientTest {
 
 	@Test
@@ -1201,49 +1207,67 @@ public class HttpClientTest {
 	}
 
 
-	@Test
-	public void clientContext()  {
-		AtomicInteger i = new AtomicInteger(0);
+	public static class ClientContext {
 
-		DisposableServer server =
-				HttpServer.create()
-				          .port(0)
-				          .handle((req, res) -> res.send(req.receive().retain()))
-				          .wiretap(true)
-				          .bindNow();
+		private void standardContextTests(HttpClient client) {
+			DisposableServer server =
+					HttpServer.create()
+							.port(0)
+							.handle((req, res) -> res.send(req.receive().retain()))
+							.wiretap(true)
+							.bindNow();
 
-		StepVerifier.create(
-				HttpClient.create(ConnectionProvider.newConnection())
-				          .port(server.port())
-				          .doOnRequest((req, c) -> {
-				              if (req.currentContext().hasKey("test")) {
-				                  i.incrementAndGet();
-				              }
-				          })
-				          .doOnResponse((res, c) -> {
-				              if (res.currentContext().hasKey("test")) {
-				                  i.incrementAndGet();
-				              }
-				          })
-						.doAfterResponse((res, c) -> {
-							// How can this work and not my App code:(:(
-				              if (res.currentContext().hasKey("test")) {
-				                  i.incrementAndGet();
-				              }
-				          })
-				          .post()
-				          .send((req, out) ->
-				              out.sendString(Mono.subscriberContext()
-				                                 .map(ctx -> ctx.getOrDefault("test", "fail"))))
-				          .responseContent()
-				          .asString()
-				          .subscriberContext(Context.of("test", "success")))
-				    .expectNext("success")
-				    .expectComplete()
-				    .verify(Duration.ofSeconds(30));
+			AtomicInteger i = new AtomicInteger(0);
 
-		assertThat(i.get()).isEqualTo(3);
-		server.disposeNow();
+			StepVerifier.create(
+					client.port(server.port())
+							.doOnRequest((req, c) -> {
+								if (req.currentContext().hasKey("test")) {
+									i.incrementAndGet();
+								}
+							})
+							.doAfterRequest((req, c) -> {
+								if (req.currentContext().hasKey("test")) {
+									i.incrementAndGet();
+								}
+							})
+							.doOnResponse((res, c) -> {
+								if (res.currentContext().hasKey("test")) {
+									i.incrementAndGet();
+								}
+							})
+							.doAfterResponse((res, c) -> {
+								// How can this work and not my App code:(:(
+								if (res.currentContext().hasKey("test")) {
+									i.incrementAndGet();
+								}
+							})
+							.post()
+							.send((req, out) ->
+									out.sendString(Mono.subscriberContext()
+											.map(ctx -> ctx.getOrDefault("test", "fail"))))
+							.responseContent()
+							.asString()
+							.subscriberContext(Context.of("test", "success")))
+					.expectNext("success")
+					.expectComplete()
+					.verify(Duration.ofSeconds(30));
+
+			assertThat(i.get()).isEqualTo(4);
+
+			server.disposeNow();
+		}
+
+		@Test
+		public void newConnections()  {
+			standardContextTests(HttpClient.create(ConnectionProvider.newConnection()));
+		}
+
+		@Test
+		public void defaultConnectionPool()  {
+			standardContextTests(HttpClient.create());
+		}
+
 	}
 
 	@Test
