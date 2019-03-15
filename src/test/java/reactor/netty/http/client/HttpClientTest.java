@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *       http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1202,13 +1202,8 @@ public class HttpClientTest {
 
 
 	@Test
-	public void testClientContext() throws Exception {
-		doTestClientContext(HttpClient.create());
-		doTestClientContext(HttpClient.create(ConnectionProvider.newConnection()));
-	}
-
-	private void doTestClientContext(HttpClient client) throws Exception {
-		CountDownLatch latch = new CountDownLatch(4);
+	public void clientContext()  {
+		AtomicInteger i = new AtomicInteger(0);
 
 		DisposableServer server =
 				HttpServer.create()
@@ -1218,39 +1213,36 @@ public class HttpClientTest {
 				          .bindNow();
 
 		StepVerifier.create(
-				client.port(server.port())
-				      .doOnRequest((req, c) -> {
-				          if (req.currentContext().hasKey("test")) {
-				              latch.countDown();
-				          }
-				      })
-				      .doAfterRequest((req, c) -> {
-				          if (req.currentContext().hasKey("test")) {
-				              latch.countDown();
-				          }
-				      })
-				      .doOnResponse((res, c) -> {
-				          if (res.currentContext().hasKey("test")) {
-				              latch.countDown();
-				          }
-				      })
-				      .doAfterResponse((req, c) -> {
-				          if (req.currentContext().hasKey("test")) {
-				              latch.countDown();
-				          }
-				      })
-				      .post()
-				      .send((req, out) ->
-				          out.sendString(Mono.subscriberContext()
-				                             .map(ctx -> ctx.getOrDefault("test", "fail"))))
-				      .responseContent()
-				      .asString()
-				      .subscriberContext(Context.of("test", "success")))
+				HttpClient.create(ConnectionProvider.newConnection())
+				          .port(server.port())
+				          .doOnRequest((req, c) -> {
+				              if (req.currentContext().hasKey("test")) {
+				                  i.incrementAndGet();
+				              }
+				          })
+				          .doOnResponse((res, c) -> {
+				              if (res.currentContext().hasKey("test")) {
+				                  i.incrementAndGet();
+				              }
+				          })
+						.doAfterResponse((res, c) -> {
+							// How can this work and not my App code:(:(
+				              if (res.currentContext().hasKey("test")) {
+				                  i.incrementAndGet();
+				              }
+				          })
+				          .post()
+				          .send((req, out) ->
+				              out.sendString(Mono.subscriberContext()
+				                                 .map(ctx -> ctx.getOrDefault("test", "fail"))))
+				          .responseContent()
+				          .asString()
+				          .subscriberContext(Context.of("test", "success")))
 				    .expectNext("success")
 				    .expectComplete()
 				    .verify(Duration.ofSeconds(30));
 
-		assertThat(latch.await(30, TimeUnit.SECONDS)).isEqualTo(true);
+		assertThat(i.get()).isEqualTo(3);
 		server.disposeNow();
 	}
 
