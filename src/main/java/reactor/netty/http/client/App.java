@@ -12,11 +12,8 @@ import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.netty.Connection;
-import reactor.netty.ConnectionObserver;
-import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
+import reactor.netty.resources.ConnectionProvider;
 import reactor.util.context.Context;
 
 import java.net.InetSocketAddress;
@@ -31,11 +28,9 @@ import java.util.function.Supplier;
 public class App {
 
     public static void main(String[] args) throws Exception {
-
         SelfSignedCertificate cert = new SelfSignedCertificate();
         SslContext ctx = SslContextBuilder.forServer(cert.certificate(), cert.privateKey()).build();
 
-        System.out.println("Hi");
         int port = 8080;
         HttpServer.create()
                 .port(port)
@@ -49,7 +44,7 @@ public class App {
                 .wiretap(true)
                 .bindNow();
 
-        HttpClient httpClient = HttpClient.create()
+        HttpClient httpClient = HttpClient.create(ConnectionProvider.newConnection())
                 .tcpConfiguration(cfg -> {
                     // TODO This absolutely won't work..  This is essentially going to make all CONNECTs on for
                     // this client get in line...
@@ -116,12 +111,13 @@ public class App {
                             };
                         }
                     });
-                }).secure(ssl -> ssl.sslContext(SslContextBuilder.forClient()
-                        .trustManager(InsecureTrustManagerFactory.INSTANCE))
-                )
-                .doOnRequest((req, conn) -> {
-                    RequestContext reqCtx = req.currentContext().get(ContextKeys.REQUEST_CONTEXT);
-                    reqCtx.setRequestTrans(new Transaction("CONN"));
+                }).secure(ssl -> ssl.sslContext(
+                        SslContextBuilder.forClient()
+                                .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                        )
+                ).doOnRequest((req, conn) -> {
+                    Optional.<RequestContext>ofNullable(req.currentContext().get(ContextKeys.REQUEST_CONTEXT))
+                            .ifPresent(reqCtx -> reqCtx.setRequestTrans(new Transaction("CONN")));
                 }).doAfterRequest((req, conn) -> {
                     Optional.<RequestContext>ofNullable(req.currentContext().get(ContextKeys.REQUEST_CONTEXT))
                             .flatMap(rc -> Optional.ofNullable(rc.getRequestTrans()))
@@ -130,29 +126,35 @@ public class App {
                                 System.out.println("Request send took " + reqT.elapsedMillis() + " ms.");
                             });
                 }).doOnResponse((resp, conn) -> {
-                    // this is fired after headers received.  Is that good enough?
-                    RequestContext reqCtx = resp.currentContext().get(ContextKeys.REQUEST_CONTEXT);
-                    reqCtx.setResponseTrans(new Transaction("RECV"));
+                    Optional.<RequestContext>ofNullable(resp.currentContext().get(ContextKeys.REQUEST_CONTEXT))
+                            .ifPresent(reqCtx -> reqCtx.setResponseTrans(new Transaction("RECV")));
                 }).doAfterResponse((resp, conn) -> {
                     Optional.<RequestContext>ofNullable(resp.currentContext().get(ContextKeys.REQUEST_CONTEXT))
                             .flatMap(rc -> Optional.ofNullable(rc.getResponseTrans()))
-                            .ifPresent(reqT -> {
-                                reqT.complete();
-                                System.out.println("Response send took " + reqT.elapsedMillis() + " ms.");
+                            .ifPresent(respT -> {
+                                respT.complete();
+                                System.out.println("Response receive took " + respT.elapsedMillis() + " ms.");
                             });
                 }).baseUrl("https://localhost:8080");
 
         Supplier<String> httpGet = () -> {
             return httpClient.request(HttpMethod.GET)
                     .uri("/foo")
+                    .responseContent()
+                    .asString()
+                    /*
                     .responseSingle((r, buf) -> buf.asString())
-                    .subscriberContext(context -> context.put(ContextKeys.REQUEST_CONTEXT, new RequestContext()))
-                    .block();
+                    */
+                    .subscriberContext(Context.of(ContextKeys.REQUEST_CONTEXT, new RequestContext()))
+                    //.block();
+                    .blockLast();  // blockFirst will result in doAfterResponse not happening..
         };
 
         System.out.println(httpGet.get());
+        /*
         System.out.println(httpGet.get());
         System.out.println(httpGet.get());
+        */
     }
 
     static class ContextKeys {
