@@ -1,8 +1,11 @@
 package reactor.netty.http.client;
 
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.resolver.AddressResolver;
@@ -12,6 +15,9 @@ import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import reactor.core.publisher.Flux;
+import reactor.netty.Connection;
+import reactor.netty.ConnectionObserver;
+import reactor.netty.channel.BootstrapHandlers;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.util.context.Context;
@@ -21,7 +27,6 @@ import java.net.SocketAddress;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -45,15 +50,21 @@ public class App {
                 .bindNow();
 
         HttpClient httpClient = HttpClient.create(ConnectionProvider.newConnection())
+                .observe(new ConnectionObserver() {
+                    // While we can do some logging here, it's not clear how to leverage
+                    // the context (and get access to our log transaction) from this client code.
+                    // However, the ConnectionObserver and its context play an important role
+                    // when it comes to firing the doOnXyz events below.
+                    @Override
+                    public void onStateChange(Connection conn, State newState) {
+                        //System.out.println(conn + ", " + newState + ", " + this.currentContext());
+                    }
+                })
                 .tcpConfiguration(cfg -> {
-                    // TODO This absolutely won't work..  This is essentially going to make all CONNECTs on for
-                    // this client get in line...
-                    final AtomicReference<Transaction> t = new AtomicReference<>();
                     return cfg.doOnConnect(b -> {
-                        t.set(new Transaction("CONN"));
-                    }).doOnConnected(client -> {
-                        t.get().complete();
-                        System.out.println("TCP connect took " + t.get().elapsedMillis() + " ms.");
+                        System.out.println("TCP conn attempt");
+                    }).doOnConnected(conn -> {
+                        System.out.println("TCP conn established");
                     }).resolver(new AddressResolverGroup<InetSocketAddress>() {
                         // hack coupling:(
                         private final AddressResolverGroup<InetSocketAddress> delegate = DefaultAddressResolverGroup.INSTANCE;
@@ -110,12 +121,35 @@ public class App {
                                 }
                             };
                         }
+                    }).bootstrap(b -> {
+                        BootstrapHandlers.updateConfiguration(b,
+                                "sams.ssl.handshake-handler",
+                                (conn, channel) -> {
+                                    channel.pipeline()
+                                            .addLast(
+                                                    "sams.ssl.handshake-listener",
+                                                    new ChannelInboundHandlerAdapter() {
+                                                        @Override
+                                                        public void userEventTriggered(ChannelHandlerContext ctx, Object evt)
+                                                                throws Exception {
+                                                            // Unfortunately, there is no SslHandshakeStarted event.  Maybe that
+                                                            // could be added here: https://github.com/netty/netty/blob/78c02aa033f29d848b3d0eeec141b3840a645703/handler/src/main/java/io/netty/handler/ssl/SslHandler.java#L1876
+                                                            // That code is what fires the completed event.
+                                                            if (evt instanceof SslHandshakeCompletionEvent) {
+                                                                System.out.println("SSL Handshake done");
+                                                            }
+                                                        }
+                                                    });
+                                });
+                        return b;
                     });
                 }).secure(ssl -> ssl.sslContext(
                         SslContextBuilder.forClient()
                                 .trustManager(InsecureTrustManagerFactory.INSTANCE)
                         )
                 ).doOnRequest((req, conn) -> {
+                    // This isn't firing at the right time..  I typically (always?) see this fire
+                    // after doAfterRequest.  https://github.com/reactor/reactor-netty/issues/558
                     Optional.<RequestContext>ofNullable(req.currentContext().get(ContextKeys.REQUEST_CONTEXT))
                             .ifPresent(reqCtx -> reqCtx.setRequestTrans(new Transaction("CONN")));
                 }).doAfterRequest((req, conn) -> {
@@ -129,6 +163,9 @@ public class App {
                     Optional.<RequestContext>ofNullable(resp.currentContext().get(ContextKeys.REQUEST_CONTEXT))
                             .ifPresent(reqCtx -> reqCtx.setResponseTrans(new Transaction("RECV")));
                 }).doAfterResponse((resp, conn) -> {
+                    // This does not have access to the correct context.
+                    // https://github.com/reactor/reactor-netty/issues/651; however, it appears
+                    // they've already fixed it.  Just need a release.
                     Optional.<RequestContext>ofNullable(resp.currentContext().get(ContextKeys.REQUEST_CONTEXT))
                             .flatMap(rc -> Optional.ofNullable(rc.getResponseTrans()))
                             .ifPresent(respT -> {
@@ -137,24 +174,20 @@ public class App {
                             });
                 }).baseUrl("https://localhost:8080");
 
-        Supplier<String> httpGet = () -> {
-            return httpClient.request(HttpMethod.GET)
-                    .uri("/foo")
-                    .responseContent()
-                    .asString()
-                    /*
-                    .responseSingle((r, buf) -> buf.asString())
-                    */
-                    .subscriberContext(Context.of(ContextKeys.REQUEST_CONTEXT, new RequestContext()))
-                    //.block();
-                    .blockLast();  // blockFirst will result in doAfterResponse not happening..
-        };
+        List<String> responses =
+                Flux.just(1, 2, 3).flatMap(i -> {
+                    return httpClient.request(HttpMethod.GET)
+                            .uri("/foo")
+                            .responseContent()
+                            .asString()
+                            .subscriberContext(Context.of(ContextKeys.REQUEST_CONTEXT, new RequestContext()))
+                            .subscriberContext(c -> c.put("hi", "yes"))
+                            .subscriberContext(Context.of("foo", "bar"));
 
-        System.out.println(httpGet.get());
-        /*
-        System.out.println(httpGet.get());
-        System.out.println(httpGet.get());
-        */
+                }).collectList()
+                .block();
+
+        System.out.println(responses);
     }
 
     static class ContextKeys {
