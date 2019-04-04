@@ -1285,7 +1285,7 @@ public class HttpClientTest {
 				      .responseContent()
                       .asString()
 					  .doFinally(Void -> latch.countDown()))
-			.expectNext("")
+			.expectNext(payload)
 			.expectComplete()
 			.verify(Duration.ofSeconds(30));
 
