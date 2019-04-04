@@ -29,6 +29,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.cert.CertificateException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,6 +43,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 import javax.net.ssl.SSLException;
 
 import io.netty.buffer.ByteBuf;
@@ -1247,6 +1249,48 @@ public class HttpClientTest {
 				    .verify(Duration.ofSeconds(30));
 
 		assertThat(latch.await(30, TimeUnit.SECONDS)).isEqualTo(true);
+		server.disposeNow();
+	}
+
+	@Test
+	public void hookFiringOrder() throws InterruptedException {
+		doHookFiringOrder(HttpClient.create());
+		doHookFiringOrder(HttpClient.create(ConnectionProvider.newConnection()));
+	}
+
+	private void doHookFiringOrder(HttpClient client) throws InterruptedException {
+		final CountDownLatch latch = new CountDownLatch(1);
+		final List<Integer> firings = new ArrayList<>();
+		final String payload = "verify those hooks!";
+
+		final DisposableServer server =
+				HttpServer.create()
+				          .port(0)
+				          .handle((req, res) -> res.sendString(Mono.just(payload)))
+				          .wiretap(true)
+				          .bindNow();
+
+		StepVerifier.create(
+				client.
+					tcpConfiguration(tcp -> {
+						return tcp.doOnConnect(b -> firings.add(0))
+							.doOnConnected(b -> firings.add(1));
+							//.doOnDisconnected(b -> firings.add(6));  // I'd love to add this..
+					}).port(server.port())
+				      .doOnRequest((req, c) -> firings.add(2))
+				      .doAfterRequest((req, c) -> firings.add(3))
+				      .doOnResponse((res, c) -> firings.add(4))
+				      .doAfterResponse((req, c) -> firings.add(5))
+				      .get()
+				      .responseContent()
+                      .asString()
+					  .doFinally(Void -> latch.countDown()))
+			.expectNext("")
+			.expectComplete()
+			.verify(Duration.ofSeconds(30));
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isEqualTo(true);
+		assertThat(firings.toArray()).isEqualTo(IntStream.range(0, 6).toArray());
 		server.disposeNow();
 	}
 
