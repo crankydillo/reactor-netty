@@ -49,7 +49,7 @@ public class App {
                 .wiretap(true)
                 .bindNow();
 
-        HttpClient httpClient = HttpClient.create(ConnectionProvider.fixed("fixed", 1))
+        HttpClient httpClient = HttpClient.create(ConnectionProvider.fixed("fixed", 2))
                 .observe(new ConnectionObserver() {
                     // While we can do some logging here, it's not clear how to leverage
                     // the context (and get access to our log transaction) from this client code.
@@ -57,14 +57,14 @@ public class App {
                     // when it comes to firing the doOnXyz events below.
                     @Override
                     public void onStateChange(Connection conn, State newState) {
-                        //System.out.println(conn + ", " + newState + ", " + this.currentContext());
+                        //printWithThread(conn + ", " + newState + ", " + this.currentContext());
                     }
                 })
                 .tcpConfiguration(cfg -> {
                     return cfg.doOnConnect(b -> {
-                        System.out.println("TCP conn attempt");
+                        printWithThread("TCP conn attempt");
                     }).doOnConnected(conn -> {
-                        System.out.println("TCP conn established");
+                        printWithThread("TCP conn established");
                     }).resolver(new AddressResolverGroup<InetSocketAddress>() {
                         // hack coupling:(
                         private final AddressResolverGroup<InetSocketAddress> delegate = DefaultAddressResolverGroup.INSTANCE;
@@ -116,7 +116,7 @@ public class App {
                                         return fn.get();
                                     } finally {
                                         t.complete();
-                                        System.out.println("DNS resolution " + address + " took " + t.elapsedMillis() + " ms.");
+                                        printWithThread("DNS resolution " + address + " took " + t.elapsedMillis() + " ms.");
                                     }
                                 }
                             };
@@ -136,7 +136,7 @@ public class App {
                                                             // could be added here: https://github.com/netty/netty/blob/78c02aa033f29d848b3d0eeec141b3840a645703/handler/src/main/java/io/netty/handler/ssl/SslHandler.java#L1876
                                                             // That code is what fires the completed event.
                                                             if (evt instanceof SslHandshakeCompletionEvent) {
-                                                                System.out.println("SSL Handshake done");
+                                                                printWithThread("SSL Handshake done");
                                                             }
                                                         }
                                                     });
@@ -157,7 +157,7 @@ public class App {
                             .flatMap(rc -> Optional.ofNullable(rc.getRequestTrans()))
                             .ifPresent(reqT -> {
                                 reqT.complete();
-                                System.out.println("Request send took " + reqT.elapsedMillis() + " ms.");
+                                printWithThread("Request send took " + reqT.elapsedMillis() + " ms.");
                             });
                 }).doOnResponse((resp, conn) -> {
                     Optional.<RequestContext>ofNullable(resp.currentContext().get(ContextKeys.REQUEST_CONTEXT))
@@ -170,7 +170,7 @@ public class App {
                             .flatMap(rc -> Optional.ofNullable(rc.getResponseTrans()))
                             .ifPresent(respT -> {
                                 respT.complete();
-                                System.out.println("Response receive took " + respT.elapsedMillis() + " ms.");
+                                printWithThread("Response receive took " + respT.elapsedMillis() + " ms.");
                             });
                 }).baseUrl("https://localhost:8080");
 
@@ -187,7 +187,7 @@ public class App {
                 }).collectList()
                 .block();
 
-        System.out.println(responses);
+        printWithThread(responses);
     }
 
     static class ContextKeys {
@@ -243,6 +243,10 @@ public class App {
             }
             return nanosToMillis.apply(completedNs - startNs);
         }
+    }
+
+    private static void printWithThread(Object o) {
+        System.out.println(Thread.currentThread().getName() + " - " + o);
     }
 
 }
