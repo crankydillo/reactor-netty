@@ -49,7 +49,7 @@ public class App {
                 .wiretap(true)
                 .bindNow();
 
-        HttpClient httpClient = HttpClient.create(ConnectionProvider.newConnection())
+        HttpClient httpClient = HttpClient.create(ConnectionProvider.fixed("fixed", 1))
                 .observe(new ConnectionObserver() {
                     // While we can do some logging here, it's not clear how to leverage
                     // the context (and get access to our log transaction) from this client code.
