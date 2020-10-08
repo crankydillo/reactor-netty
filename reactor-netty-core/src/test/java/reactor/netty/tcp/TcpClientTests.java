@@ -37,6 +37,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -71,6 +72,7 @@ import reactor.netty.resources.LoopResources;
 import reactor.test.StepVerifier;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.context.Context;
 import reactor.util.retry.Retry;
 
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -579,6 +581,39 @@ public class TcpClientTests {
 		Assertions.assertThat(client2)
 				.isNotSameAs(client1)
 				.isNotSameAs(((TcpClientConnect) client2).duplicate());
+	}
+
+	@Test
+	public void testSubscriberContextAndDoOnChannelInit() throws Exception {
+		DisposableServer server = null;
+		try {
+			server = TcpServer.create().port(0).bindNow();
+
+			final String contextKey = "marcels-key";
+			final AtomicReference<String> contextualData = new AtomicReference<>();
+			final CountDownLatch channelInitialized = new CountDownLatch(1);
+			final String contextValue = "marcels-context";
+
+			TcpClient.create()
+					.doOnChannelInit((connectionObserver, channel, remoteAddress) -> {
+						if (connectionObserver.currentContext().hasKey(contextKey)) {
+							contextualData.set(connectionObserver.currentContext().get(contextKey));
+						}
+						channelInitialized.countDown();
+					})
+					.remoteAddress(server::address)
+					.wiretap(true)
+					.connect()
+					.contextWrite(Context.of(contextKey, contextValue))
+					.subscribe();
+
+			assertTrue(channelInitialized.await(30, TimeUnit.SECONDS));
+			assertNotNull(contextualData.get());
+			assertEquals(contextValue, contextualData.get());
+		} finally {
+			if (server != null)
+				server.disposeNow();
+		}
 	}
 
 	public static final class EchoServer
